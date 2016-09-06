@@ -20,14 +20,14 @@ from sklearn.externals import joblib
 from sklearn.feature_selection import SelectKBest
 from sklearn.feature_selection import chi2
 from sklearn.datasets import dump_svmlight_file
-from sknn.mlp import Classifier, Layer
+#from sknn.mlp import Classifier, Layer
 from logistic_sgd import run_logistic, predict_logistic
 import matplotlib.pyplot as plt
 from mlp import run_mlp, predict
 import pickle
 import math
-from pyfm import pylibfm as fm
-import pywFM
+#from pyfm import pylibfm as fm
+#import pywFM
 
 from sklearn.grid_search import GridSearchCV
 #from xgboost.sklearn import XGBClassifier
@@ -607,9 +607,17 @@ def first_level_probs(test_only=False):
 		train_ea = pickle.load(f)
 	with open('../cache/sparse_test2_1_event_availability.p', 'rb') as f:
 		test_ea = pickle.load(f)
+
+	#Leak Features...
+	train_row_id = np.load('../cache/train_row_id.npy').reshape(-1,1)
+	test_row_id = np.load('../cache/test_row_id.npy').reshape(-1,1)
+	
 	train_ea = train_ea.values.reshape((train_ea.values.shape[0], 1))
 	test_ea = test_ea.values.reshape((test_ea.values.shape[0], 1))
-		
+			
+	print(train_ea.shape)
+	print(train_row_id.shape)
+
 	lable_group = LabelEncoder()
 	y = lable_group.fit_transform(Y)
 	print(train1.shape, train2.shape, train3.shape, train4.shape)
@@ -628,8 +636,8 @@ def first_level_probs(test_only=False):
 	test9 = model.transform(test9)
 	
 	#train5[train5.nonzero()] = 1
-	train = sparse.csc_matrix(hstack((train, train5, train8, train9, train_ea)))
-	test = sparse.csc_matrix(hstack((test, test5, test8, test9, test_ea)))
+	train = sparse.csc_matrix(hstack((train_row_id, train, train5, train8, train9)))
+	test = sparse.csc_matrix(hstack((test_row_id, test, test5, test8, test9)))
 	
 	print(train.shape)
 	print(test.shape)
@@ -691,6 +699,7 @@ def first_level_probs(test_only=False):
 		score = 0.0
 		test_len = test.shape[0]
 		for train_index, test_index in kf:
+			#Do train and eval metric on EA rows, but predict all rows of test_index..
 			#train_index = np.intersect1d(train_index, ea_rows)
 			#test_index_ea = np.intersect1d(test_index, ea_rows)
 			'''
@@ -716,7 +725,7 @@ def first_level_probs(test_only=False):
 			model = train_rf(train[train_index], y[train_index])
 			X_valid_prob_rf = model.predict_proba(train[test_index])
 			X_train_prob = model.predict_proba(train[train_index])
-			score_ = log_loss(y[test_index_ea].tolist(), model.predict_proba(train[test_index_ea]))
+			score_ = log_loss(y[test_index].tolist(), model.predict_proba(train[test_index]))
 			train_score = log_loss(y[train_index].tolist(), X_train_prob)
 			print("RF-%s - Train Score: %s; Valid Score: %s" % (len(model.estimators_), str(train_score), str(score_)))
 			X_test_prob_rf = model.predict_proba(test)		
@@ -731,6 +740,8 @@ def first_level_probs(test_only=False):
 			print("XT - Train Score: %s; Valid Score: %s" % (str(train_score), str(score_)))
 			X_test_prob_rf = model.predict_proba(test)	
 			'''
+			'''
+			#NN...
 			
 			score_, predictions = run_keras(train[train_index], y[train_index], train[test_index], y[test_index], predict=[train[test_index], test])
 			X_valid_prob_mlp, X_test_prob_mlp = predictions			
@@ -738,27 +749,27 @@ def first_level_probs(test_only=False):
 			#XGBOOST...
 			gbm = train_xgb(train[train_index], y[train_index], train[test_index], y[test_index])
 			print('Predict Valid..')
-			X_valid_prob_xgb = gbm.predict(xgb.DMatrix(train[test_index]))
+			X_valid_prob = gbm.predict(xgb.DMatrix(train[test_index]))
 			print('Predict Test...')
-			X_test_prob_xgb = gbm.predict(xgb.DMatrix(test))
+			X_test_prob = gbm.predict(xgb.DMatrix(test))
 			score_ = log_loss(y[test_index].tolist(), gbm.predict(xgb.DMatrix(train[test_index])))
-			'''
+			
 			score = score + score_
 			#Combine Probs
 			#train2s = np.hstack((X_valid_prob_xgb, X_valid_prob_mlp, X_valid_prob_knn))
 			#train2s = np.hstack((X_valid_prob_xgb, X_valid_prob_mlp))
-			train2s = X_valid_prob_mlp
+			train2s = X_valid_prob
 			if train2 is not None:
 				train2 = np.vstack((train2, train2s))
-				X_test_prob_mlp_sum = np.add(X_test_prob_mlp_sum, X_test_prob_mlp)
+				X_test_prob_mlp_sum = np.add(X_test_prob_mlp_sum, X_test_prob)
 			else:
 				train2 = train2s
-				X_test_prob_mlp_sum = X_test_prob_mlp
+				X_test_prob_mlp_sum = X_test_prob
 			y2 = y2 + y[test_index].tolist()
 		
 		print('KERAS: {}'.format(round(score/5.0, 5)))
 		print('# Save the 1st Level Train Probabilities..')
-		with open("../cache/sparse_train2_37.p", 'wb') as f:
+		with open("../cache/sparse_train2_45.p", 'wb') as f:
 			pickle.dump(train2, f)
 		#with open("../cache/y2_1.p", 'wb') as f:
 		#	pickle.dump(y2, f)
@@ -767,7 +778,7 @@ def first_level_probs(test_only=False):
 	
 	test_prob_mlp = np.multiply(X_test_prob_mlp_sum, 0.2)
 	print('# Save the 1st Level Test Probabilities..')
-	with open("../cache/sparse_test2_37.p", 'wb') as f:
+	with open("../cache/sparse_test2_45.p", 'wb') as f:
 		#pickle.dump(np.hstack((test_prob_xgb, test_prob_mlp, test_prob_knn)), f)
 		#pickle.dump(np.hstack((test_prob_xgb, test_prob_mlp)), f)
 		pickle.dump(test_prob_mlp,f)	
@@ -889,6 +900,34 @@ def ensemble():
 		train38 = pickle.load(f)
 	with open('../cache/sparse_test2_38.p', 'rb') as f:
 		test38 = pickle.load(f)
+	with open('../cache/sparse_train2_39.p', 'rb') as f:
+		train39 = pickle.load(f)
+	with open('../cache/sparse_test2_39.p', 'rb') as f:
+		test39 = pickle.load(f)
+	with open('../cache/sparse_train2_40.p', 'rb') as f:
+		train40 = pickle.load(f)
+	with open('../cache/sparse_test2_40.p', 'rb') as f:
+		test40 = pickle.load(f)
+	with open('../cache/sparse_train2_41.p', 'rb') as f:
+		train41 = pickle.load(f)
+	with open('../cache/sparse_test2_41.p', 'rb') as f:
+		test41 = pickle.load(f)
+	with open('../cache/sparse_train2_42.p', 'rb') as f:
+		train42 = pickle.load(f)
+	with open('../cache/sparse_test2_42.p', 'rb') as f:
+		test42 = pickle.load(f)
+	with open('../cache/sparse_train2_43.p', 'rb') as f:
+		train43 = pickle.load(f)
+	with open('../cache/sparse_test2_43.p', 'rb') as f:
+		test43 = pickle.load(f)
+	with open('../cache/sparse_train2_45.p', 'rb') as f:
+		train45 = pickle.load(f)
+	with open('../cache/sparse_test2_45.p', 'rb') as f:
+		test45 = pickle.load(f)
+
+	train_row_id = np.load('../cache/train_row_id_kf.npy').reshape(-1,1)
+	test_row_id = np.load('../cache/test_row_id.npy').reshape(-1,1)
+	
 	with open('../cache/y2_1.p', 'rb') as f:
 		y = np.array(pickle.load(f))
 	with open('../cache/device.p', 'rb') as f:
@@ -920,14 +959,15 @@ def ensemble():
 	ea_rows = np.where(train_ea_adj == 1)[0]	
 	non_ea_rows = np.where(train_ea_adj == 0)[0]
 	test_set_rows_ea = np.where(test_ea == 1)[0]
+	test_set_rows_nea = np.where(test_ea == 0)[0]
 	
 	#print(train1.shape)
-	train = np.hstack((train1, train_xlgt, train2, train4, train17, train18, train21, train27, train22, train19, train20,train23, train24, train25, train26, train28, train29, train30, train34, train35, train36, train37, train38))
-	test = np.hstack((test1, test_xlgt, test2, test4, test17, test18, test21, test27, test22, test19, test20, test23, test24, test25, test26, test28, test29, test30, test34, test35, test36, test37, test38))
-	
+	train = np.hstack((train_row_id, train1, train_xlgt, train2, train4, train17, train18, train21, train27, train22, train19, train20,train23, train24, train25, train26, train28, train29, train30, train34, train35, train36, train37, train38, train39, train40, train41, train42, train43, train45))
+	test = np.hstack((test_row_id, test1, test_xlgt, test2, test4, test17, test18, test21, test27, test22, test19, test20, test23, test24, test25, test26, test28, test29, test30, test34, test35, test36, test37, test38, test39, test40, test41, test42, test43, test45))
+
 	score = 0.0
 	X_test_prob_sum = None
-	
+	'''
 	for train_index, test_index in kf:
 		train_index = np.intersect1d(train_index, ea_rows)
 		test_index = np.intersect1d(test_index, ea_rows)
@@ -943,62 +983,106 @@ def ensemble():
 	X_test_prob_ea = np.multiply(X_test_prob_sum,0.2)
 	score1 = score/5.0
 	print('ENSEMBLE (EA): {}'.format(round(score1, 5)))
-	
-	for i in [train35, train33, train23, train27, train37]:
-		print(log_loss(y[non_ea_rows].tolist(), i[non_ea_rows]))
-	X_val_prob = train35*0.4 + train33*0.4 + train37*0.1 + train23*0.07 + train27*0.03
-	score2 = log_loss(y[non_ea_rows].tolist(), X_val_prob[non_ea_rows])
-	print('ENSEMBLE (NON-EA): {}'.format(round(score2, 5)))
-	test_set_rows_nea = np.where(test_ea == 0)[0]
-	X_test_prob_nea = (test35*0.4 + test33*0.4 + test37*0.1 + test23*0.07 + test27*0.03)[test_set_rows_nea]
 	'''
-	train = np.hstack((train35, train33, train21, train23))
-	test = np.hstack((test35, test33, test21, test23))
+	train = np.hstack((train_row_id, train43, train45, train41, train39, train37, train35, train33, train23, train27))
+	test = np.hstack((test_row_id, test43, test45, test41, test39, test37, test35, test33, test23, test27))
+	del test1, test_xlgt, test2, test4, test17, test18, test21, test27, test22, test19, test20, test23, test24, test25, test26, test28, test29, test30, test34, test35, test36, test37, test38, test39, test40, test41, test42, test43, test45
+	'''
+	score = 0.0
 	X_test_prob_sum = None
-	score = 0.0		
-	test_set_rows_nea = np.where(test_ea == 0)[0]
 	for train_index, test_index in kf:
 		train_index = np.intersect1d(train_index, non_ea_rows)
 		test_index = np.intersect1d(test_index, non_ea_rows)
 		X_train, X_val, y_train, y_val = train[train_index], train[test_index], y[train_index], y[test_index]
-		score_, predictions = run_keras(X_train, y_train, X_val, y_val, epochs=500, ensemble=True, nea=True,
+		score_, predictions = run_keras(X_train, y_train, X_val, y_val, epochs=500, ensemble=True,
 								predict=[test[test_set_rows_nea]])
-		model = LogisticRegression().fit(X_train, y_train)
-		score_ = log_loss(y_val.tolist(), model.predict_proba(X_val))
-		
-		predictions = [model.predict_proba(test[test_set_rows_nea])]
 		score = score + score_
 		if X_test_prob_sum is not None:
 			X_test_prob_sum = np.add(X_test_prob_sum, predictions[0])
 		else:
 			X_test_prob_sum = predictions[0]
-
+	
 	X_test_prob_nea = np.multiply(X_test_prob_sum,0.2)
 	score2 = score/5.0
-	print('ENSEMBLE (NON-EA): {}'.format(round(score2, 5)))
+	print('ENSEMBLE (NEA): {}'.format(round(score2, 5)))
 	'''
+	'''
+	#RF..
+	score = 0.0
+	X_test_prob_sum = None
+	for train_index, test_index in kf:
+		train_index = np.intersect1d(train_index, non_ea_rows)
+		test_index = np.intersect1d(test_index, non_ea_rows)
+		model = train_rf(train[train_index], y[train_index])
+		X_train_prob = model.predict_proba(train[train_index])
+		score_ = log_loss(y[test_index].tolist(), model.predict_proba(train[test_index]))
+		train_score = log_loss(y[train_index].tolist(), X_train_prob)
+		print("RF-%s - Train Score: %s; Valid Score: %s" % (len(model.estimators_), str(train_score), str(score_)))
+		X_test_prob = model.predict_proba(test[test_set_rows_nea])
+		score = score + score_
+		if X_test_prob_sum is not None:
+			X_test_prob_sum = np.add(X_test_prob_sum, X_test_prob)
+		else:
+
+			X_test_prob_sum = predictions[0]
+	X_test_prob_nea = np.multiply(X_test_prob_sum,0.2)
+	score2 = score/5.0
+	print('ENSEMBLE (NEA): {}'.format(round(score2, 5)))
+	'''
+	'''
+	score = 0.0
+	X_test_prob_sum = None
+	for train_index, test_index in kf:
+		train_index = np.intersect1d(train_index, non_ea_rows)
+		test_index = np.intersect1d(test_index, non_ea_rows)
+		gbm = train_xgb(train[train_index], y[train_index], train[test_index], y[test_index])
+		X_test_prob = gbm.predict(xgb.DMatrix(test[test_set_rows_nea]), ntree_limit = gbm.best_ntree_limit)
+		score_ = log_loss(y[test_index].tolist(), gbm.predict(xgb.DMatrix(train[test_index]), ntree_limit = gbm.best_ntree_limit))
+		print(score_)
+		score = score + score_
+		if X_test_prob_sum is not None:
+			X_test_prob_sum = np.add(X_test_prob_sum, X_test_prob)
+		else:
+			X_test_prob_sum = X_test_prob
+	X_test_prob_nea = np.multiply(X_test_prob_sum,0.2)
+	score2 = score/5.0
+	print('ENSEMBLE (NEA): {}'.format(round(score2, 5)))
+	'''
+	'''	
+	for i in [train43, train45, train41, train39, train37, train35, train33, train23, train27]:
+		print(log_loss(y[non_ea_rows].tolist(), i[non_ea_rows]))
+	X_val_prob = train43*0.6 + train45*0.2 + train41*0.1 + train39*0.07 + train23*0.03
+	score2 = log_loss(y[non_ea_rows].tolist(), X_val_prob[non_ea_rows])
+	print('ENSEMBLE (NON-EA): {}'.format(round(score2, 5)))
+	test_set_rows_nea = np.where(test_ea == 0)[0]
+	X_test_prob_nea = (test43*0.6 + test45*0.2 + test41*0.1 + test39*0.07 + test23*0.03)[test_set_rows_nea]
+	'''
+
+	
 	X_test_prob = np.vstack((X_test_prob_ea, X_test_prob_nea))
 	test_rows = np.hstack((test_set_rows_ea, test_set_rows_nea))
 	X_test_prob = X_test_prob[np.argsort(test_rows)]
-	#X_test_prob, X_train_prob, X_valid_prob, best_iter = run_mlp(X_train, X_val, y_train, y_val, test, learning_rate=0.01, n_epochs=1000, n_hidden=[30], activation='tanh', early_stop=True)
-	
-	#mlp = ensemble_mlp(X_train, np.array(y_train), X_val, np.array(y_val))
-	#X_test_prob = mlp.predict_proba(sparse.csr_matrix(test))
-	#X_valid_prob = mlp.predict_proba(sparse.csr_matrix(X_val))
-	#score = log_loss(y_val, X_valid_prob)
-	#score = log_loss(y_val, X_train_prob)
 	score = ((score1*test_set_rows_ea.shape[0]) + (score2*test_set_rows_nea.shape[0]))/(test_set_rows_nea.shape[0]+test_set_rows_ea.shape[0])
+	
 
 	'''
-	print('...XGB')
-	dtrain = xgb.DMatrix(X_train, y_train)
-	dvalid = xgb.DMatrix(X_val, y_val)
-	watchlist = [(dtrain, 'train'), (dvalid, 'eval')]
-	gbm = xgb.train(xgb_params, dtrain, 1000, evals=watchlist, early_stopping_rounds=10, verbose_eval=True, learning_rates = lr)
-	gbm = xgb.train(xgb_params, dtrain, gbm.best_ntree_limit, verbose_eval=True, learning_rates = lr)
-	X_valid_prob = gbm.predict(xgb.DMatrix(X_val))
-	X_test_prob = gbm.predict(xgb.DMatrix(test))	
+	#Ensemble of All Data...
+	for train_index, test_index in kf:
+		X_train, X_val, y_train, y_val = train[train_index], train[test_index], y[train_index], y[test_index]
+
+		score_, predictions = run_keras(X_train, y_train, X_val, y_val, epochs=500, ensemble=True,
+								predict=[test])
+		score = score + score_
+		if X_test_prob_sum is not None:
+			X_test_prob_sum = np.add(X_test_prob_sum, predictions[0])
+		else:
+			X_test_prob_sum = predictions[0]
+	
+	X_test_prob = np.multiply(X_test_prob_sum,0.2)
+	score1 = score/5.0
+	print('ENSEMBLE (ALL): {}'.format(round(score1, 5)))
 	'''
+
 	# Write results
 	print('# Ensemble - Submit')
 	result = pd.DataFrame(X_test_prob, columns=classes)
@@ -1006,7 +1090,6 @@ def ensemble():
 	result = result.set_index("device_id")
 	sub_file = 'submission_ensemble_' + str(score) + '_' + str(datetime.datetime.now().strftime('%Y-%m-%d-%H-%M')) + '.csv'
 	result.to_csv(sub_file, index=True, index_label='device_id')
-	
 	
 xgb_params = {
 	"objective": "multi:softprob",
@@ -1018,19 +1101,20 @@ xgb_params = {
 	'max_depth': 15,
 	'min_child_weight': 11, 	
 	'subsample': 0.8,
-	'colsample_bytree': 0.3,
+	'colsample_bytree': 0.7,
 	'reg_alpha': 1,
 	'gamma': 0.0
 }
 
 def lr(i, n):
-	if(i < 40): 
+	if(i < 8): 
 		return 0.2
-	elif(i < 60):
+	elif(i < 20):
 		return 0.1
 	else:
-		return 0.0055
-		
+		return 0.05
+
+'''		
 
 xgb_params = {
 		'booster': "gblinear",
@@ -1051,9 +1135,10 @@ xgb_params = {
 		'num_class': 12,
 		'objective': "multi:softprob",
 		'eval_metric': "mlogloss",
-		'eta': 0.07,
-		'max_depth': 8,
-		'alpha': 3
+		'eta': 0.05,
+		'max_depth': 10,
+		'alpha': 3,
+		'colsample_bytree': 0.99
 		}
 
 	
@@ -1062,7 +1147,7 @@ def lr(i, n):
 		return 0.07
 	else:
 		return 0.0055
-
+'''
 classes = ['F23-','F24-26','F27-28','F29-32','F33-42','F43+','M22-','M23-26','M27-28','M29-31','M32-38','M39+']
 			
 def get_events_only_device_features():
@@ -1109,7 +1194,16 @@ def get_events_available_feature_for_ensemble():
 	with open('../cache/sparse_train2_1_event_availability.p', 'wb') as f:
 		pickle.dump(train['bool'], f)
 	with open('../cache/sparse_test2_1_event_availability.p', 'wb') as f:
-		pickle.dump(test['bool'], f)	
+		pickle.dump(test['bool'], f)
+
+def leaks_kf():
+	train_row_id = np.load('../cache/train_row_id.npy').reshape(-1,1)
+	train = []
+	with open('../cache/kfold_5.p', 'rb') as f:
+		kf = pickle.load(f)
+	for train_index, test_index in kf:
+		train.extend(train_row_id[test_index])
+	np.save('../cache/train_row_id_kf.npy', train)
 	
 if(__name__ == "__main__"):
 
@@ -1126,8 +1220,9 @@ if(__name__ == "__main__"):
 	#get_events_available_feature_for_ensemble()
 	
 	#models_only_on_pbdm()
-	first_level_probs(False)
-	#ensemble()	
+	#first_level_probs(False)
+	#leaks_kf()
+	ensemble()	
 	
 
 
